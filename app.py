@@ -191,7 +191,7 @@ def calculate_speeds():
         if speeds:
             min_speed = min(speeds)
             max_speed = max(speeds)
-            avg_speed = 0.5*(sum(list(filter(lambda x: x <= 140, speeds))) / len(list(filter(lambda x: x <= 170, speeds))) + total_distance/(times[len(times) - 1] - times[0]))
+            avg_speed = 0.5*(sum(list(filter(lambda x: x <= 140, speeds))) / len(list(filter(lambda x: x <= 140, speeds))) + total_distance/(times[len(times) - 1] - times[0]))
         else:
             min_speed = max_speed = avg_speed = 0
 
