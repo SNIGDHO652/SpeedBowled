@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SpeedBowled</title>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <h1>SpeedBowled</h1>
+
+    <!-- Instructions Section -->
+    <div id="instructions">
+        <h2>Instructions:</h2>
+        <ul>
+            <li>Please upload the video with a background not having the ball's color.</li>
+            <li>Please keep the camera stable for accuracy.</li>
+            <li>Please click on the ball in the uploaded image for picking the ball's color.</li>
+            <li>Upload a video of at least 1 second.</li>
+            <li>Please use a high-resolution camera for better results.</li>
+            <li>Best for speeds less than 140 km/h.</li>
+            <li>Calculate Focal Length before calculating speeds.</li>
+            <li>Consider the average displayed speed only.</li>
+        </ul>
+    </div>
+
+    <!-- Form for calculating focal length -->
+    <form id="focalLengthForm">
+        <h2>Step 1: Calculate Focal Length</h2>
+        <label for="ballImage">Upload Image (Ball at 1m):</label>
+        <input type="file" id="ballImage" accept="image/*" onchange="displayImage()">
+        <div style="width: 300px; height: auto;">
+            <canvas id="imageCanvas" style="width: 100%; height: auto; border:1px solid #000;"></canvas>
+        </div>
+        <label for="ballDiameter">Enter Ball Diameter (cm):</label>
+        <input type="text" id="ballDiameter" placeholder="Enter diameter in cm">
+        <label for="ballColor">Selected Ball Color:</label>
+        <input type="color" id="ballColor" value="#ff0000" disabled>
+        <button type="button" onclick="calculateFocalLength()">Calculate Focal Length</button>
+        <p id="focalLengthResult"></p>
+    </form>
+
+    <!-- Form for calculating speeds -->
+    <form id="speedForm">
+        <h2>Step 2: Calculate Speeds</h2>
+        <label for="ballVideo">Upload Video:</label>
+        <input type="file" id="ballVideo" accept="video/*" onchange="loadVideo()">
+        <div class="video-container">
+            <video id="videoPlayer" style="width: 100%; height: auto; border:1px solid #000;" controls></video>
+            <p>Capture Start Time: <span id="startTime">0.00</span>s</p>
+            <p>Capture End Time: <span id="endTime">0.00</span>s</p>
+            <button type="button" onclick="setStartTime()">Set Capture Start Time</button>
+            <button type="button" onclick="setEndTime()">Set Capture End Time</button>
+        </div>
+        <input type="hidden" id="calculatedFocalLength">
+        <input type="hidden" id="selectedBallColor">
+        <button type="button" onclick="calculateSpeeds()">Calculate Speeds</button>
+        <p id="speedResults"></p>
+        <canvas id="speedPlot" style="display:none;"></canvas>
+    </form>
+
+    <script>
+        let selectedColor = "#ff0000";  // Default color
+        let startTime = 0;
+        let endTime = 0;
+
+        function displayImage() {
+            const canvas = document.getElementById("imageCanvas");
+            const context = canvas.getContext("2d");
+            const fileInput = document.getElementById("ballImage");
+            const file = fileInput.files[0];
+            const reader = new FileReader();
+
+            reader.onload = function(event) {
+                const img = new Image();
+                img.onload = function() {
+                    const aspectRatio = img.width / img.height;
+                    canvas.width = 300;
+                    canvas.height = canvas.width / aspectRatio;
+                    context.drawImage(img, 0, 0, canvas.width, canvas.height);
+                }
+                img.src = event.target.result;
+            }
+
+            reader.readAsDataURL(file);
+
+            canvas.addEventListener('click', function(event) {
+                const rect = canvas.getBoundingClientRect();
+                const x = event.clientX - rect.left;
+                const y = event.clientY - rect.top;
+                const pixel = context.getImageData(x, y, 1, 1).data;
+                selectedColor = `#${pixel[0].toString(16).padStart(2, '0')}${pixel[1].toString(16).padStart(2, '0')}${pixel[2].toString(16).padStart(2, '0')}`;
+                document.getElementById('ballColor').value = selectedColor;
+            });
+        }
+
+        function loadVideo() {
+            const videoInput = document.getElementById('ballVideo');
+            const videoPlayer = document.getElementById('videoPlayer');
+            const file = videoInput.files[0];
+            const url = URL.createObjectURL(file);
+            videoPlayer.src = url;
+
+            videoPlayer.addEventListener('loadedmetadata', function() {
+                endTime = videoPlayer.duration;
+                document.getElementById('endTime').textContent = endTime.toFixed(2);
+            });
+        }
+
+        function setStartTime() {
+            const videoPlayer = document.getElementById('videoPlayer');
+            startTime = videoPlayer.currentTime;
+            document.getElementById('startTime').textContent = startTime.toFixed(2);
+        }
+
+        function setEndTime() {
+            const videoPlayer = document.getElementById('videoPlayer');
+            endTime = videoPlayer.currentTime;
+            document.getElementById('endTime').textContent = endTime.toFixed(2);
+        }
+
+        function calculateFocalLength() {
+            const imageFile = document.getElementById('ballImage').files[0];
+            const diameter = document.getElementById('ballDiameter').value;
+            const color = selectedColor;
+
+            const reader = new FileReader();
+            reader.onloadend = function() {
+                const imageData = reader.result;
+                const payload = {
+                    image: imageData,
+                    diameter: diameter,
+                    color: color
+                };
+
+                fetch('/calculate_focal_length', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.focal_length) {
+                        document.getElementById('focalLengthResult').innerText = `Focal Length: ${data.focal_length}`;
+                        document.getElementById('calculatedFocalLength').value = data.focal_length;
+                        document.getElementById('selectedBallColor').value = color;
+                    } else {
+                        document.getElementById('focalLengthResult').innerText = 'Error: ' + data.error;
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('focalLengthResult').innerText = 'Error: ' + error;
+                });
+            }
+
+            reader.readAsDataURL(imageFile);
+        }
+
+        function calculateSpeeds() {
+            const videoFile = document.getElementById('ballVideo').files[0];
+            const focalLength = document.getElementById('calculatedFocalLength').value;
+            const ballDiameter = document.getElementById('ballDiameter').value;
+            const ballColor = document.getElementById('selectedBallColor').value;
+
+            const formData = new FormData();
+            formData.append('video', videoFile);
+            formData.append('focal_length', focalLength);
+            formData.append('diameter', ballDiameter);
+            formData.append('color', ballColor);
+            formData.append('start_time', startTime);
+            formData.append('end_time', endTime);
+
+            fetch('/calculate_speeds', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.min_speed !== undefined) {
+                    document.getElementById('speedResults').innerText = `Min Speed: ${data.min_speed} km/h, Max Speed: ${data.max_speed} km/h, Avg Speed: ${data.avg_speed} km/h`;
+                    
+                    // Update plot using Chart.js
+                    updatePlot(data.times, data.speeds);
+                } else {
+                    document.getElementById('speedResults').innerText = 'Error: ' + data.error;
+                }
+            })
+            .catch(error => {
+                document.getElementById('speedResults').innerText = 'Error: ' + error;
+            });
+        }
+
+        function updatePlot(times, speeds) {
+            const ctx = document.getElementById('speedPlot').getContext('2d');
+            if (window.speedChart) {
+                window.speedChart.destroy();
+            }
+            window.speedChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: times,
+                    datasets: [{
+                        label: 'Speed (km/h)',
+                        data: speeds,
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 2,
+                        fill: false
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            position: 'bottom',
+                            title: {
+                                display: true,
+                                text: 'Time (s)'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Speed (km/h)'
+                            }
+                        }
+                    }
+                }
+            });
+            document.getElementById('speedPlot').style.display = 'block';
+        }
+    </script>
+</body>
+</html>

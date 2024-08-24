@@ -1,0 +1,1 @@
+Add index.html inside 'templates' directory and styles.css inside 'static' directory. Use 'python3 app.py' to run the application and open 'http://127.0.0.1:5000/' in the browser.Enjoy the application!
