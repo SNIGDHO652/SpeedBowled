@@ -1,214 +1,138 @@
+from flask import Flask, render_template, request, jsonify
 import cv2
-import numpy as np
-import base64
-import logging
-from flask import Flask, request, jsonify, render_template
-from io import BytesIO
-from PIL import Image
+import json
 import math
-import os
-import matplotlib.pyplot as plt
+import numpy as np
+from scipy.spatial.distance import euclidean
 
 app = Flask(__name__)
 
-# Configure logging
-logging.basicConfig(level=logging.DEBUG,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+BALL_DIAMETER_CM = 0.0725  
 
-def hex_to_bgr(hex_color):
-    """Convert hex color to BGR color."""
-    hex_color = hex_color.lstrip('#')
-    bgr_color = tuple(int(hex_color[i:i+2], 16) for i in (4, 2, 0))
-    return bgr_color
+def detect_colored_and_circular_ball(frame, color_range=None):
+    if color_range:
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        lower_color = np.array([max(color_range[0] - 10, 0), 50, 50])
+        upper_color = np.array([min(color_range[0] + 10, 180), 255, 255])
+        mask = cv2.inRange(hsv, lower_color, upper_color)
+        masked_frame = cv2.bitwise_and(frame, frame, mask=mask)
+        gray = cv2.cvtColor(masked_frame, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-def adaptive_color_filter(image, target_color_bgr, range_h, range_s, range_v):
-    """Improved color filtering with dynamic range adjustment and histogram equalization."""
-    target_hsv = cv2.cvtColor(np.uint8([[target_color_bgr]]), cv2.COLOR_BGR2HSV)[0][0]
-    target_h, target_s, target_v = target_hsv
-    lower_bound = np.array([target_h - range_h*target_h, max(0, target_s - range_s*target_s), max(0, target_v - range_v*target_v)])
-    upper_bound = np.array([target_h + range_h*target_h, min(255, target_s + range_s*target_s), min(255, target_v + range_v*target_v)])
-    
-    hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    hsv_image[:,:,2] = cv2.equalizeHist(hsv_image[:,:,2])
-    mask = cv2.inRange(hsv_image, lower_bound, upper_bound)
-    cv2.imwrite('img.jpg', mask)
-    return mask
+    gray_blurred = cv2.GaussianBlur(gray, (9, 9), 2)
+    circles = cv2.HoughCircles(
+        gray_blurred,
+        cv2.HOUGH_GRADIENT,
+        dp=1.2,
+        minDist=30,
+        param1=50,
+        param2=30,
+        minRadius=10,
+        maxRadius=100
+    )
 
-def is_circle_color_valid(image, circle, target_color_bgr, color_threshold=40):
-    """Verify if the specified color is within the detected circle."""
-    x, y, r = circle
-    mask = np.zeros_like(image[:,:,0])
-    cv2.circle(mask, (x, y), r, 255, thickness=-1)
-
-    # Extract the region of interest (ROI) containing the circle
-    circle_pixels = cv2.bitwise_and(image, image, mask=mask)
-    circle_pixels_hsv = cv2.cvtColor(circle_pixels, cv2.COLOR_BGR2HSV)
-
-    # Convert target color to HSV
-    target_color_hsv = cv2.cvtColor(np.uint8([[target_color_bgr]]), cv2.COLOR_BGR2HSV)[0][0]
-
-    # Calculate the mean color within the circle
-    mean_hsv = cv2.mean(np.abs(circle_pixels_hsv), mask=mask)[:3]
-    var_color = np.array(np.abs(mean_hsv - target_color_hsv))
-    return var_color[0] < 41 and var_color[1] < 51 and var_color[2] < 255
-
-def detect_ball(image, ball_color_hex):
-    """Detect the ball in the image using advanced techniques."""
-    ball_color_bgr = hex_to_bgr(ball_color_hex)
-    mask = adaptive_color_filter(image, ball_color_bgr, range_h=.20, range_s=.3, range_v=1)
-    
-    # Morphological operations
-    kernel = np.ones((5, 5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    
-    blurred = cv2.GaussianBlur(mask, (9, 9), 2)
-    edges = cv2.Canny(blurred, 50, 150)
-    
-    circles = cv2.HoughCircles(edges, cv2.HOUGH_GRADIENT, dp=1.2, minDist=1000, param1=100, param2=30, minRadius=1, maxRadius=2000)
-    
-    output_image = image.copy()
-    valid_circles = []
     if circles is not None:
-        circles = np.round(circles[0, :]).astype("int")
-        for circle in circles:
-            if is_circle_color_valid(image, circle, ball_color_bgr):
-                x, y, r = circle
-                cv2.circle(output_image, (x, y), r, (0, 255, 0), 4)
-                valid_circles.append(circle)
-        cv2.imwrite('out.jpg', output_image)
-        if valid_circles:
-            largest_circle = max(valid_circles, key=lambda c: c[2])
-            x, y, radius = largest_circle
-            return (x, y), 2 * radius
-    logging.warning("No valid circles detected")
-    return None, None
+        circles = np.uint16(np.around(circles))
+        for circle in circles[0, :]:
+            center_x, center_y, radius = circle[0], circle[1], circle[2]
+            return center_x, center_y, radius
+
+    return None  
+
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
-@app.route('/calculate_focal_length', methods=['POST'])
-def calculate_focal_length():
-    logging.info('Calculating focal length')
-    try:
-        data = request.json
-        image_data = data['image']
-        ball_diameter = float(data['diameter'])
-        ball_color = data['color']
+@app.route('/process_video', methods=['POST'])
+def process_video():
+    video_file = request.files['video']
+    color_hsv = request.form.get('color')  
+    color_range = None
 
-        # Decode the image
-        image_data = base64.b64decode(image_data.split(',')[1])
-        image = Image.open(BytesIO(image_data))
-        image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    if color_hsv:
+        color_hsv = json.loads(color_hsv)
+        h = int(color_hsv[0])
+        color_range = (h,) 
 
-        # Detect the ball in the image
-        _, ball_diameter_pixels = detect_ball(image, ball_color)
-        if ball_diameter_pixels is None:
-            logging.warning('Ball not detected in the image')
-            return jsonify({'error': 'Ball not detected'}), 400
+    video_path = "uploaded_video.mp4"
+    video_file.save(video_path)
 
-        # Calculate the focal length
-        distance_from_camera = 100  # 100 cm
-        focal_length = (ball_diameter_pixels * distance_from_camera) / ball_diameter
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
 
-        logging.debug(f'Focal length calculated: {focal_length}')
-        return jsonify({'focal_length': focal_length})
-    except Exception as e:
-        logging.error(f'Error in calculating focal length: {e}')
-        return jsonify({'error': str(e)}), 500
+    print(fps)
 
-@app.route('/calculate_speeds', methods=['POST'])
-def calculate_speeds():
-    logging.info('Calculating speeds')
-    try:
-        video_file = request.files['video']
-        ball_color = request.form['color']
-        focal_length = float(request.form['focal_length'])
-        ball_diameter = float(request.form['diameter'])
-        start_time = float(request.form['start_time'])
-        end_time = float(request.form['end_time'])
+    speeds = []
+    b = 9.8 / (123 / 3.6)
+    vx = 0
+    vy = 0
+    vz = 0
+    prev_pos = None
+    prev_vel = None
+    prev_acn = None
 
-        video_file_path = os.path.join('uploaded_videos', video_file.filename)
-        video_file.save(video_file_path)
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        vel = (0, 0, 0)
 
-        # Open the video file
-        cap = cv2.VideoCapture(video_file_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        time_interval = 1 / fps  # Time between frames
+        ball_info = detect_colored_and_circular_ball(frame, color_range)
+        if ball_info:
+            center_x, center_y, radius = ball_info
+            real_distance = 1 / (2 * radius)
+            pos = (center_x*real_distance, center_y*real_distance, real_distance)
 
-        positions = []
-        speeds = []
-        times = []
-        ball_pixel_diameters = []
+            speed = 0
+            acn_vect = (0, 0, 0)
+            if prev_pos is not None:
+                vx = ((pos[0] - prev_pos[0]) * fps)  # in m/s
+                vy = ((pos[1] - prev_pos[1]) * fps)
+                vz = ((pos[2] - prev_pos[2]) * fps)
+                vel = (vx, vy, vz)
+            prev_pos = pos
+            if prev_vel is not None:
+                acn_vect = ((vel[0] - prev_vel[0]) * fps,
+                (vel[1] - prev_vel[1]) * fps,
+                (vel[2] - prev_vel[2]) * fps)
+            
+            c = 0
+            if prev_acn is not None: 
+                if prev_vel is not None:
+                    c = math.sqrt( max(0 , ((acn_vect[2] + b*vel[2])**2 - (prev_acn[2] + b*prev_vel[2])**2) / ((prev_acn[0] + b*prev_vel[0])**2 + (prev_acn[1] + b*prev_vel[1])**2 - (acn_vect[0] + b*vel[0])**2 - (acn_vect[1] + b*vel[1])**2 + 0.0000000000000001)))
+                    l = (9.8 * 9.8) / ((c**2)*(acn_vect[0] + b*vel[0])**2 + (c**2)*(acn_vect[1] + b*vel[1])**2 + (acn_vect[2] + b*vel[2])**2)
+                    k = l*c
+                    speed = math.sqrt((vx*k)**2 + (vy*k)**2 + (vz*l)**2)
 
-        frame_count = 0
 
-        cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000)
-        while cap.isOpened():
-            current_time = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
-            if current_time > end_time:
-                break
+            speeds.append(speed * 3.6 )
+            prev_vel = vel
+            prev_acn = acn_vect
+    
+    processed_speeds = []
 
-            ret, frame = cap.read()
-            if not ret:
-                break
+    for i in range(len(speeds)-2):
+        speed1 = 0
+        speed2 = 0
+        speed3 = 0
+        if speeds[i] and speeds[i] >= 0 and speeds[i] < 100000 : 
+            speed1 = min(speeds[i], 170)
+        if speeds[i+1] and speeds[i+1] >= 0 and speeds[i+1] < 100000 :
+            speed2 = min(speeds[i+1], 170)
+        if speeds[i+2] and speeds[i+2] >= 0 and speeds[i+2] < 100000 :
+            speed3 = min(speeds[i+2], 170)
+        processed_speeds.append((speed1 + speed2 + speed3) / 3)
 
-            # Detect the ball in the current frame
-            center, ball_pixel_diameter = detect_ball(frame, ball_color)
-            if ball_pixel_diameter is not None:
-                ball_pixel_diameters.append(ball_pixel_diameter)
-            if center is not None:
-                positions.append(center)
-                times.append(frame_count * time_interval)  # Convert to milliseconds
-            frame_count += 1
-        cap.release()
+    cap.release()
+    return jsonify({
+        "speeds": processed_speeds,
+        "max": max(processed_speeds, default=0),
+        "min": min(processed_speeds, default=0),
+        "avg": sum(processed_speeds) / len(processed_speeds) if processed_speeds else 0
+    })
 
-        # Calculate real-world coordinates and speeds
-        for i in range(1, len(positions)):
-            x1, y1 = positions[i - 1]
-            x2, y2 = positions[i]
-
-            # Convert pixel coordinates to real-world coordinates
-            Z1 = (focal_length * ball_diameter) / float(ball_pixel_diameters[i - 1])
-            Z2 = (focal_length * ball_diameter) / float(ball_pixel_diameters[i])
-            X1 = (x1 * Z1) / focal_length
-            Y1 = (y1 * Z1) / focal_length
-            X2 = (x2 * Z2) / focal_length
-            Y2 = (y2 * Z2) / focal_length
-
-            # Calculate displacement
-            displacement = math.sqrt((X2 - X1) ** 2 + (Y2 - Y1) ** 2 + (Z2 - Z1) ** 2)
-            speed = (displacement / (times[i] - times[i-1])) * 0.036  # Convert cm/s to km/h
-            speeds.append(speed)
-
-        total_distance = 0
-
-        for i in range(1, len(speeds)):
-            if np.abs(speeds[i] - speeds[i - 1]) >= max(10, 0.2 * min(speeds[i], speeds[i - 1])) and max(speeds[i], speeds[i - 1]) >= 140:
-                speeds[i] = min(speeds[i], speeds[i - 1])
-            total_distance += ((speeds[i] + speeds[i-1])*0.5*(times[i] - times[i-1]))
-        if speeds:
-            min_speed = min(speeds)
-            max_speed = max(speeds)
-            avg_speed = 0.5*(sum(list(filter(lambda x: x <= 140, speeds))) / len(list(filter(lambda x: x <= 140, speeds))) + total_distance/(times[len(times) - 1] - times[0]))
-        else:
-            min_speed = max_speed = avg_speed = 0
-
-        return jsonify({
-            'min_speed': min_speed,
-            'max_speed': max_speed,
-            'avg_speed': avg_speed,
-            'speeds': speeds,
-            'times': times[:len(speeds)]
-        })
-    except Exception as e:
-        logging.error(f'Error in calculating speeds: {e}')
-        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    if not os.path.exists('uploaded_videos'):
-        os.makedirs('uploaded_videos')
-    if not os.path.exists('static'):
-        os.makedirs('static')
     app.run(debug=True)
