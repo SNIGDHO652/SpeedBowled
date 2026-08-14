@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: speedbowled
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 180
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DERIVATIVE_SPAN_FRAMES
+        value: "3"
+      - key: BOUNCE_SUMMARY_EXCLUSION_S
+        value: "0.15"

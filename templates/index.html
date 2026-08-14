@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#07110d">
+  <meta
+    name="description"
+    content="Speedbowled measures bowling speed, acceleration, swing and bounce events from a calibrated camera."
+  >
+  <title>Speedbowled — Bowling Speed Lab</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <div class="noise"></div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite">
+    <span id="toastIcon">✓</span>
+    <span id="toastText"></span>
+  </div>
+
+  <header class="site-header">
+    <a class="brand" href="/">
+      <span class="brand-mark">SB</span>
+      <span>
+        <strong>Speedbowled</strong>
+        <small>Bowling analytics lab</small>
+      </span>
+    </a>
+
+    <div class="header-badge">
+      <span class="live-dot"></span>
+      Pinhole · CV · 3D motion
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-copy">
+        <div class="eyebrow">YOUR PHONE. YOUR SPELL. YOUR DATA.</div>
+
+        <h1>
+          Measure every
+          <span>delivery</span>
+          like a pro.
+        </h1>
+
+        <p>
+          Calibrate once from 1 metre, pick your ball colour, then record a
+          delivery. Speedbowled reconstructs the ball in 3-D and charts speed,
+          acceleration, swing-rate and detected bounce events.
+        </p>
+
+        <div class="hero-pills">
+          <span>⚡ No radar gun</span>
+          <span>◎ Colour-aware tracking</span>
+          <span>↗ 3-D pinhole motion</span>
+          <span>◆ Bounce detection</span>
+        </div>
+      </div>
+
+      <div class="hero-panel">
+        <div class="hero-panel-line">
+          <span>Calibration distance</span>
+          <strong>1.00 m</strong>
+        </div>
+
+        <div class="hero-panel-line">
+          <span>Default diameter</span>
+          <strong>{{ "%.2f"|format(default_ball_diameter_cm) }} cm</strong>
+        </div>
+
+        <div class="hero-panel-line">
+          <span>Motion model</span>
+          <strong>Finite differences only</strong>
+        </div>
+
+        <div class="hero-panel-line">
+          <span>Tracking</span>
+          <strong>HSV + motion + SIFT</strong>
+        </div>
+      </div>
+    </section>
+
+    <section class="info-grid">
+      <article class="info-card">
+        <span class="info-number">01</span>
+        <div>
+          <h3>Calibrate the camera</h3>
+          <p>
+            Enter the ball diameter, place the ball exactly 1 m from the
+            camera, then click it in the image. The measured diameter gives
+            the pinhole focal length.
+          </p>
+        </div>
+      </article>
+
+      <article class="info-card">
+        <span class="info-number">02</span>
+        <div>
+          <h3>Keep the setup unchanged</h3>
+          <p>
+            Use the same lens, zoom and camera mode for calibration and
+            bowling. Bright lighting and a contrasting background improve
+            tracking quality.
+          </p>
+        </div>
+      </article>
+
+      <article class="info-card">
+        <span class="info-number">03</span>
+        <div>
+          <h3>Inspect every delivery</h3>
+          <p>
+            View speed, acceleration and 3-D direction change. Detected
+            bounces are marked directly on the graphs and excluded from
+            speed summary statistics around the impact.
+          </p>
+        </div>
+      </article>
+    </section>
+
+    <section class="workflow-shell">
+      <div class="stepper">
+        <div class="step active" id="stepIndicator1">
+          <span>1</span>
+          <div>
+            <strong>Calibrate</strong>
+            <small>Camera + ball</small>
+          </div>
+        </div>
+
+        <div class="step-line"></div>
+
+        <div class="step" id="stepIndicator2">
+          <span>2</span>
+          <div>
+            <strong>Record</strong>
+            <small>Upload or capture</small>
+          </div>
+        </div>
+
+        <div class="step-line"></div>
+
+        <div class="step" id="stepIndicator3">
+          <span>3</span>
+          <div>
+            <strong>Analyse</strong>
+            <small>Metrics + graphs</small>
+          </div>
+        </div>
+      </div>
+
+      <section class="workflow-card" id="calibrationSection">
+        <div class="section-heading">
+          <div>
+            <span class="section-kicker">STEP 1</span>
+            <h2>Camera & ball calibration</h2>
+          </div>
+
+          <span class="status-chip" id="calibrationStatus">
+            Not calibrated
+          </span>
+        </div>
+
+        <p class="section-intro">
+          Enter the physical ball diameter first. Then put the ball exactly
+          <strong>1 metre</strong> from the camera, capture/upload an image,
+          and <strong>click the centre of the ball</strong>.
+        </p>
+
+        <div class="spec-grid tracking-settings-grid">
+          <label class="spec-field">
+            <span>Ball diameter</span>
+
+            <div class="input-unit">
+              <input
+                id="ballDiameterInput"
+                type="number"
+                min="1"
+                max="50"
+                step="0.01"
+                value="{{ default_ball_diameter_cm }}"
+              >
+              <strong>cm</strong>
+            </div>
+
+            <small>
+              Used for focal length and 3-D reconstruction scale.
+            </small>
+          </label>
+
+          <label class="spec-field">
+            <span>H tolerance</span>
+
+            <div class="input-unit">
+              <input
+                id="hueToleranceInput"
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                value="{{ default_hue_tolerance_percent }}"
+              >
+              <strong>%</strong>
+            </div>
+
+            <small>
+              Circular hue tolerance around the clicked ball colour.
+            </small>
+          </label>
+
+          <label class="spec-field">
+            <span>S tolerance</span>
+
+            <div class="input-unit">
+              <input
+                id="saturationToleranceInput"
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                value="{{ default_saturation_tolerance_percent }}"
+              >
+              <strong>%</strong>
+            </div>
+
+            <small>
+              Saturation range around the clicked ball colour.
+            </small>
+          </label>
+
+          <label class="spec-field">
+            <span>V tolerance</span>
+
+            <div class="input-unit">
+              <input
+                id="valueToleranceInput"
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                value="{{ default_value_tolerance_percent }}"
+              >
+              <strong>%</strong>
+            </div>
+
+            <small>
+              Brightness range around the clicked ball colour.
+            </small>
+          </label>
+
+          <div class="distance-tile">
+            <span>Calibration distance</span>
+            <strong>1.00 m</strong>
+            <small>
+              Measure from the camera to the ball centre.
+            </small>
+          </div>
+        </div>
+
+        <div class="action-row">
+          <button class="btn btn-primary" id="openCalibrationCamera">
+            <span>◉</span>
+            Open camera
+          </button>
+
+          <button class="btn btn-secondary" id="closeCalibrationCamera" hidden>
+            <span>×</span>
+            Close camera
+          </button>
+
+          <button class="btn btn-secondary" id="uploadCalibrationButton">
+            <span>↑</span>
+            Upload image
+          </button>
+
+          <input
+            id="calibrationFileInput"
+            type="file"
+            accept="image/*"
+            hidden
+          >
+        </div>
+
+        <div class="capture-grid">
+          <div class="media-panel">
+            <video
+              id="calibrationCamera"
+              autoplay
+              playsinline
+              muted
+              hidden
+            ></video>
+
+            <button
+              class="btn btn-capture"
+              id="captureCalibrationButton"
+              hidden
+            >
+              Capture frame
+            </button>
+
+            <div
+              class="canvas-wrap"
+              id="calibrationCanvasWrap"
+              hidden
+            >
+              <canvas id="calibrationCanvas"></canvas>
+
+              <div class="canvas-tip">
+                Click directly on the ball
+              </div>
+            </div>
+
+            <div class="empty-state" id="calibrationEmpty">
+              <div class="empty-icon">◎</div>
+              <strong>Calibration image</strong>
+              <span>
+                Capture or upload a ball placed at 1 metre.
+              </span>
+            </div>
+          </div>
+
+          <aside class="calibration-readout">
+            <div class="readout-label">
+              CALIBRATION READOUT
+            </div>
+
+            <div class="readout-item">
+              <span>Focal length</span>
+              <strong id="focalReadout">—</strong>
+            </div>
+
+            <div class="readout-item">
+              <span>Detected diameter</span>
+              <strong id="diameterReadout">—</strong>
+            </div>
+
+            <div class="readout-item">
+              <span>Physical diameter</span>
+              <strong id="specReadout">
+                {{ "%.2f"|format(default_ball_diameter_cm) }} cm
+              </strong>
+            </div>
+
+            <div class="readout-item">
+              <span>Ball colour</span>
+
+              <div class="colour-readout">
+                <span
+                  id="colourSwatch"
+                  class="colour-swatch"
+                ></span>
+
+                <strong id="colourReadout">—</strong>
+              </div>
+            </div>
+
+            <div class="readout-item">
+              <span>Circle confidence</span>
+              <strong id="circleReadout">—</strong>
+            </div>
+
+            <div class="calibration-note">
+              Changing the ball diameter after calibration invalidates the
+              calibration. Recalibrate after editing it.
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="workflow-card locked" id="videoSection">
+        <div class="section-heading">
+          <div>
+            <span class="section-kicker">STEP 2</span>
+            <h2>Record the delivery</h2>
+          </div>
+
+          <span class="status-chip" id="videoStatus">
+            Waiting for calibration
+          </span>
+        </div>
+
+        <p class="section-intro">
+          Keep the calibrated camera setup unchanged. Open the camera and
+          start recording when ready, or upload a clip made with the same
+          camera, lens and zoom.
+        </p>
+
+        <div class="analysis-window-card">
+          <div class="analysis-window-heading">
+            <div>
+              <span class="section-kicker">ANALYSIS WINDOW</span>
+              <h3>Choose the video interval to process</h3>
+            </div>
+
+            <span id="videoDurationReadout">Load a video to set duration</span>
+          </div>
+
+          <div class="analysis-window-grid">
+            <label class="spec-field">
+              <span>Start instant</span>
+
+              <div class="input-unit">
+                <input
+                  id="analysisStartInput"
+                  type="number"
+                  min="0"
+                  step="0.001"
+                  value="0.000"
+                  disabled
+                >
+                <strong>s</strong>
+              </div>
+
+              <small>
+                Defaults to the start of the video.
+              </small>
+            </label>
+
+            <label class="spec-field">
+              <span>End instant</span>
+
+              <div class="input-unit">
+                <input
+                  id="analysisEndInput"
+                  type="number"
+                  min="0"
+                  step="0.001"
+                  value="0.000"
+                  disabled
+                >
+                <strong>s</strong>
+              </div>
+
+              <small>
+                Defaults to the end of the video.
+              </small>
+            </label>
+          </div>
+        </div>
+
+        <div class="action-row">
+          <button class="btn btn-primary" id="openVideoCameraButton" disabled>
+            <span>◉</span>
+            Open camera
+          </button>
+
+          <button class="btn btn-secondary" id="uploadVideoButton" disabled>
+            <span>↑</span>
+            Upload video
+          </button>
+
+          <input
+            id="videoFileInput"
+            type="file"
+            accept="video/*"
+            hidden
+          >
+        </div>
+
+        <div class="video-stage">
+          <video
+            id="analysisCamera"
+            autoplay
+            playsinline
+            muted
+            hidden
+          ></video>
+
+          <video
+            id="videoPreview"
+            controls
+            playsinline
+            hidden
+          ></video>
+
+          <div class="empty-state compact" id="videoEmpty">
+            <div class="empty-icon">▶</div>
+            <strong>Bowling clip</strong>
+            <span>
+              Open the camera or upload a video after calibration.
+            </span>
+          </div>
+
+          <div
+            class="record-controls"
+            id="recordControls"
+            hidden
+          >
+            <div class="recording-status">
+              <span
+                class="record-dot idle"
+                id="recordDot"
+              ></span>
+
+              <span id="recordingStatusText">
+                Camera ready
+              </span>
+            </div>
+
+            <div class="record-control-buttons">
+              <button
+                class="btn btn-primary small-btn"
+                id="startRecordingButton"
+              >
+                Start recording
+              </button>
+
+              <button
+                class="btn btn-danger small-btn"
+                id="stopRecordingButton"
+                hidden
+              >
+                Stop recording
+              </button>
+
+              <button
+                class="btn btn-secondary small-btn"
+                id="closeVideoCameraButton"
+              >
+                Close camera
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <button class="btn btn-analyse" id="analyseButton" disabled>
+          <span id="analyseButtonText">
+            Analyse delivery
+          </span>
+
+          <span
+            class="spinner"
+            id="analyseSpinner"
+            hidden
+          ></span>
+        </button>
+      </section>
+
+      <section
+        class="workflow-card results-card"
+        id="resultsSection"
+        hidden
+      >
+        <div class="section-heading">
+          <div>
+            <span class="section-kicker">STEP 3</span>
+            <h2>Delivery report</h2>
+          </div>
+
+          <span class="status-chip success">
+            Analysis complete
+          </span>
+        </div>
+
+        <div id="warningArea" class="warning-area"></div>
+
+        <div id="bounceSummary" class="bounce-summary" hidden>
+          <div class="bounce-summary-heading">
+            <div>
+              <span class="section-kicker">BOUNCE EVENTS</span>
+              <h3 id="bounceSummaryTitle">Detected bounces</h3>
+            </div>
+
+            <span class="bounce-count" id="bounceCount">0</span>
+          </div>
+
+          <div id="bounceList" class="bounce-list"></div>
+        </div>
+
+        <div class="metric-grid metric-grid-three">
+          <article class="metric-card speed">
+            <div class="metric-title">
+              <span>⚡</span>
+              Speed
+            </div>
+
+            <strong class="metric-main" id="speedAvg">—</strong>
+            <div class="metric-unit">km/h average</div>
+
+            <div class="metric-range">
+              <span>
+                MIN
+                <b id="speedMin">—</b>
+              </span>
+
+              <span>
+                MAX
+                <b id="speedMax">—</b>
+              </span>
+            </div>
+
+            <div class="metric-note">
+              Bounce-adjacent velocities excluded
+            </div>
+          </article>
+
+          <article class="metric-card acceleration">
+            <div class="metric-title">
+              <span>↗</span>
+              Acceleration
+            </div>
+
+            <strong class="metric-main" id="accelerationAvg">—</strong>
+            <div class="metric-unit">m/s² average</div>
+
+            <div class="metric-range">
+              <span>
+                MIN
+                <b id="accelerationMin">—</b>
+              </span>
+
+              <span>
+                MAX
+                <b id="accelerationMax">—</b>
+              </span>
+            </div>
+          </article>
+
+          <article class="metric-card swing">
+            <div class="metric-title">
+              <span>⌁</span>
+              Swing rate
+            </div>
+
+            <strong class="metric-main" id="swingAvg">—</strong>
+            <div class="metric-unit">°/s direction change</div>
+
+            <div class="metric-range">
+              <span>
+                MIN
+                <b id="swingMin">—</b>
+              </span>
+
+              <span>
+                MAX
+                <b id="swingMax">—</b>
+              </span>
+            </div>
+          </article>
+        </div>
+
+        <div class="chart-help">
+          <span>↖</span>
+          Hover/tap for an exact point. Drag horizontally over a graph
+          to select an interval and see its min, max and average. Dashed
+          vertical markers indicate detected bounce events.
+        </div>
+
+        <div class="chart-grid">
+          <article class="chart-card">
+            <div class="chart-heading">
+              <div>
+                <span>SPEED</span>
+                <h3>Velocity variation</h3>
+              </div>
+
+              <strong>km/h</strong>
+            </div>
+
+            <div class="chart-canvas-wrap">
+              <canvas id="speedChart"></canvas>
+              <div class="chart-tooltip" id="speedChartTooltip" hidden></div>
+              <div class="chart-range-readout" id="speedRangeReadout">
+                Drag across the graph to inspect an interval.
+              </div>
+            </div>
+          </article>
+
+          <article class="chart-card">
+            <div class="chart-heading">
+              <div>
+                <span>ACCELERATION</span>
+                <h3>Acceleration variation</h3>
+              </div>
+
+              <strong>m/s²</strong>
+            </div>
+
+            <div class="chart-canvas-wrap">
+              <canvas id="accelerationChart"></canvas>
+              <div
+                class="chart-tooltip"
+                id="accelerationChartTooltip"
+                hidden
+              ></div>
+              <div
+                class="chart-range-readout"
+                id="accelerationRangeReadout"
+              >
+                Drag across the graph to inspect an interval.
+              </div>
+            </div>
+          </article>
+
+          <article class="chart-card chart-card-wide">
+            <div class="chart-heading">
+              <div>
+                <span>SWING</span>
+                <h3>3-D direction change</h3>
+              </div>
+
+              <strong>°/s</strong>
+            </div>
+
+            <div class="chart-canvas-wrap">
+              <canvas id="swingChart"></canvas>
+              <div class="chart-tooltip" id="swingChartTooltip" hidden></div>
+              <div class="chart-range-readout" id="swingRangeReadout">
+                Drag across the graph to inspect an interval.
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div class="quality-strip">
+          <div>
+            <span>Tracking detections</span>
+            <strong id="qualityDetections">—</strong>
+          </div>
+
+          <div>
+            <span>Speed samples shown</span>
+            <strong id="qualitySpeedGraphSamples">—</strong>
+          </div>
+
+          <div>
+            <span>Speed samples in summary</span>
+            <strong id="qualitySpeedSamples">—</strong>
+          </div>
+
+          <div>
+            <span>Excluded near bounces</span>
+            <strong id="qualityExcludedSamples">—</strong>
+          </div>
+
+          <div>
+            <span>Acceleration samples</span>
+            <strong id="qualityAccelerationSamples">—</strong>
+          </div>
+
+          <div>
+            <span>Focal length</span>
+            <strong id="qualityFocal">—</strong>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <footer>
+    <strong>Speedbowled</strong>
+
+    <span>
+      Camera measurements depend on calibration, visibility, frame rate,
+      motion blur, ball-size accuracy and camera stability.
+    </span>
+  </footer>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
